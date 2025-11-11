@@ -7,7 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 class StepService {
   StreamSubscription<StepCount>? _subscription;
 
-  /// callback ให้หน้า UI เวลา steps เปลี่ยน
+  /// callback
   Function(int steps)? onStepChanged;
 
   int steps = 0;
@@ -15,7 +15,7 @@ class StepService {
   double calories = 0;
   int dailyGoal = 8000;
 
-  /// เรียกตอนเริ่มหน้า HomeScreen
+  ///Call at the beginning of the HomeScreen page
   Future<void> init() async {
     await _loadGoal();
     final ok = await _ensurePermission();
@@ -52,16 +52,15 @@ class StepService {
         }
       },
       onError: (error) {
-        // ไม่ให้แอพตาย แต่อาจจะ log ไว้
+        // กันแอพตาย
         // เช่น sensor ไม่มีในเครื่อง
-        // print('Pedometer error: $error');
+        print('Pedometer error: $error');
       },
       cancelOnError: false,
     );
   }
 
   void _updateStats() {
-    // ปรับตามโจทย์ / สมมติฐาน
     distance = steps * 0.0008; // 1 step ~ 0.8 m
     calories = steps * 0.04; // 1 step ~ 0.04 kcal
   }

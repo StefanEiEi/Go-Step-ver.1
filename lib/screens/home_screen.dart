@@ -1,9 +1,19 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:lottie/lottie.dart';
 
 import '../services/step_service.dart';
+import '../services/isar_service.dart';
 import '../widgets/stat_card.dart';
 import '../widgets/summary_header.dart';
 import '../widgets/weekly_chart.dart';
+
+enum ScreenState {
+  loading,
+  fail,
+  normal,
+}
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -15,8 +25,11 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   final StepService _stepService = StepService();
 
-  bool _isLoading = true;
+  ScreenState _screenState = ScreenState.loading;
   String? _errorMessage;
+
+  bool _isWalking = false;
+  Timer? _walkingTimer;
 
   @override
   void initState() {
@@ -24,50 +37,91 @@ class _HomeScreenState extends State<HomeScreen> {
     _initializeStepService();
   }
 
-  Future<void> _initializeStepService() async {
-    try {
-      await _stepService.init();
-
-      // เมื่อมีการนับก้าวใหม่ → อัปเดตหน้าจอ
-      _stepService.onStepChanged = (steps) {
-        if (mounted) {
-          setState(() {});
-        }
-      };
-    } catch (e) {
-      _errorMessage = e.toString();
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
-    }
-  }
-
   @override
   void dispose() {
+    _walkingTimer?.cancel();
     _stepService.dispose();
     super.dispose();
   }
 
-  // สร้าง data สำหรับกราฟ 7 วัน (เวอร์ชันง่าย)
-  List<Map<String, dynamic>> _buildWeeklyDataForChart() {
-    final now = DateTime.now();
-    return List.generate(7, (index) {
-      final day = now.subtract(Duration(days: 6 - index));
-      final isToday = index == 6;
-      return {
-        'date': DateTime(day.year, day.month, day.day),
-        'steps': isToday ? _stepService.steps : 0,
+  Future<void> _initializeStepService() async {
+    try {
+      
+      setState(() {
+        _screenState = ScreenState.loading;
+        _errorMessage = null;
+      });
+
+      await Future.delayed(const Duration(seconds: 4));
+
+      await _stepService.init();
+
+      _stepService.onStepChanged = (steps) {
+        if (!mounted) return;
+
+        setState(() {
+          _isWalking = true;
+        });
+
+        _walkingTimer?.cancel();
+        _walkingTimer = Timer(const Duration(seconds: 3), () {
+          if (!mounted) return;
+          setState(() {
+            _isWalking = false;
+          });
+        });
+
+        //Save dately data to Isar
+        IsarService.saveDailyData(
+          date: DateTime.now(),
+          steps: _stepService.steps,
+          calories: _stepService.calories,
+          distance: _stepService.distance,
+        );
       };
-    });
+
+      if (!mounted) return;
+
+      //loading เสร็จ
+      setState(() {
+        _screenState = ScreenState.normal;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _screenState = ScreenState.fail;
+        _errorMessage = e.toString();
+      });
+    }
   }
 
+  // weekly data
+  Future<List<Map<String, dynamic>>> _buildWeeklyDataForChart() async {
+    final weekly = await IsarService.getWeeklyData();
+    if (weekly.isEmpty) {
+      final now = DateTime.now();
+      return List.generate(7, (index) {
+        final day = now.subtract(Duration(days: 6 - index));
+        final isToday = index == 6;
+        return {
+          'date': DateTime(day.year, day.month, day.day),
+          'steps': isToday ? _stepService.steps : 0,
+        };
+      });
+    }
+
+    return weekly
+        .map((d) => {
+              'date': d.date,
+              'steps': d.steps,
+            })
+        .toList();
+  }
+
+  // popup set goal
   Future<void> _showSetGoalDialog() async {
-    final controller = TextEditingController(
-      text: _stepService.dailyGoal.toString(),
-    );
+    final controller =
+        TextEditingController(text: _stepService.dailyGoal.toString());
 
     final result = await showDialog<int>(
       context: context,
@@ -105,47 +159,53 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (result != null && result > 0) {
       await _stepService.setGoal(result);
-      if (mounted) {
-        setState(() {});
-      }
+      if (mounted) setState(() {});
     }
   }
 
+  // ==================== BUILD ====================
   @override
   Widget build(BuildContext context) {
-    final steps = _stepService.steps;
-    final goal = _stepService.dailyGoal;
-    final progress = goal > 0 ? (steps / goal).clamp(0.0, 1.0) : 0.0;
-
-    // กำลังโหลด
-    if (_isLoading) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    // 1) Loading
+    if (_screenState == ScreenState.loading) {
+      return Scaffold(
+        backgroundColor: const Color(0xFFF5F6FA),
+        body: Center(
+          child: Lottie.asset(
+            'assets/loading.json',
+            width: 180,
+            height: 180,
+            repeat: true,
+          ),
+        ),
+      );
     }
 
-    // มี error (เช่น ไม่ให้ permission)
-    if (_errorMessage != null) {
+    // 2) Fail
+    if (_screenState == ScreenState.fail) {
       return Scaffold(
-        appBar: AppBar(title: const Text('GoStep!')),
+        backgroundColor: const Color(0xFFF5F6FA),
         body: Center(
           child: Padding(
             padding: const EdgeInsets.all(24),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(
-                  Icons.error_outline,
-                  size: 64,
-                  color: Colors.redAccent,
+                Lottie.asset(
+                  'assets/error.json',
+                  width: 220,
+                  height: 220,
+                  repeat: true,
                 ),
                 const SizedBox(height: 16),
-                Text(_errorMessage!, textAlign: TextAlign.center),
+                Text(
+                  _errorMessage ??
+                      'An error occurred while initializing the system.',
+                  textAlign: TextAlign.center,
+                ),
                 const SizedBox(height: 16),
                 ElevatedButton(
                   onPressed: () {
-                    setState(() {
-                      _isLoading = true;
-                      _errorMessage = null;
-                    });
                     _initializeStepService();
                   },
                   child: const Text('Try again'),
@@ -157,50 +217,92 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
 
-    // ปกติ
+    // 3) Normal UI
+    final steps = _stepService.steps;
+    final goal = _stepService.dailyGoal;
+    final progress = goal > 0 ? (steps / goal).clamp(0.0, 1.0) : 0.0;
+
     return Scaffold(
-      appBar: AppBar(
-        title: const Text("GoStep!"),
-        centerTitle: true,
-        elevation: 0,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.flag),
-            tooltip: 'Set Goal',
-            onPressed: _showSetGoalDialog,
+      backgroundColor: const Color(0xFFF5F6FA),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              //GoStep! + ปุ่มตั้ง Goal
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'GoStep!',
+                    style: TextStyle(
+                      fontSize: 28,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.settings, size: 26),
+                    onPressed: _showSetGoalDialog,
+                  ),
+                ],
+              ),
+
+              const SizedBox(height: 24),
+              
+              // SummaryHeader
+              SummaryHeader(
+                steps: steps,
+                goal: goal,
+                progress: progress,
+                isWalking: _isWalking,
+              ),
+
+              const SizedBox(height: 24),
+
+              //Calories & Distance
+              Row(
+                children: [
+                  Expanded(
+                    child: StatCard(
+                      icon: Icons.local_fire_department,
+                      value: _stepService.calories.toStringAsFixed(1),
+                      unit: 'cal',
+                      color: Colors.orange,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: StatCard(
+                      icon: Icons.straighten,
+                      value: _stepService.distance.toStringAsFixed(2),
+                      unit: 'km',
+                      color: Colors.purple,
+                    ),
+                  ),
+                ],
+              ),
+
+              const SizedBox(height: 24),
+
+              // Weekly Progress
+              FutureBuilder<List<Map<String, dynamic>>>(
+                future: _buildWeeklyDataForChart(),
+                builder: (context, snapshot) {
+                  if (!snapshot.hasData) {
+                    return const Center(
+                      child: CircularProgressIndicator(),
+                    );
+                  }
+                  final weeklyData = snapshot.data!;
+                  return WeeklyChart(
+                    weeklyData: weeklyData,
+                    dailyGoal: goal,
+                  );
+                },
+              ),
+            ],
           ),
-        ],
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            SummaryHeader(steps: steps, goal: goal, progress: progress),
-            const SizedBox(height: 16),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                StatCard(
-                  icon: Icons.local_fire_department,
-                  value: _stepService.calories.toStringAsFixed(1),
-                  unit: 'kcal',
-                  color: Colors.orange,
-                ),
-                StatCard(
-                  icon: Icons.directions_walk,
-                  value: _stepService.distance.toStringAsFixed(2),
-                  unit: 'km',
-                  color: Colors.purple,
-                ),
-              ],
-            ),
-            const SizedBox(height: 24),
-            WeeklyChart(
-              weeklyData: _buildWeeklyDataForChart(),
-              dailyGoal: goal,
-            ),
-          ],
         ),
       ),
     );
